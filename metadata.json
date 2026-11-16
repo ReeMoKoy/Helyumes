@@ -1,0 +1,6 @@
+{
+  "name": "Helyume",
+  "description": "Google ve Wikipedia araştırmalı hızlı yapay zeka asistanı — Helyume 1 Pro ve Helyume 1 Ultra.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
