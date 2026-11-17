@@ -1,6 +1,6 @@
-import { CheckCircle2, ShieldCheck, X } from 'lucide-react';
+import { CheckCircle2, ExternalLink, ShieldCheck, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { signInWithGoogleAccount } from '../lib/firebase';
+import { signInWithGoogleAccount, signInWithGoogleRedirectAccount } from '../lib/firebase';
 import { HelyumeLogo } from './HelyumeLogo';
 
 export type AuthModalMode = 'login' | 'register';
@@ -11,28 +11,72 @@ interface AuthModalProps {
   onClose: () => void;
 }
 
-function mapFirebaseAuthError(err: unknown): string {
+interface ParsedAuthError {
+  message: string;
+  showRedirectFallback?: boolean;
+}
+
+function mapFirebaseAuthError(err: unknown): ParsedAuthError {
   const raw = err instanceof Error ? err.message : String(err ?? '');
-  if (raw.includes('auth/popup-closed-by-user')) {
-    return 'Giriş penceresi kapatıldı. Devam etmek için tekrar deneyebilirsiniz.';
+  const host = typeof window !== 'undefined' ? window.location.hostname : 'bu alan adı';
+
+  if (raw.includes('auth/unauthorized-domain')) {
+    return {
+      message: `Bu alan adı (${host}) Firebase yetkili alan adları listesinde değil. Firebase Console → Authentication → Settings → Authorized domains bölümüne "${host}" adresini ekleyin. [auth/unauthorized-domain]`,
+    };
   }
   if (raw.includes('auth/popup-blocked')) {
-    return 'Tarayıcı açılır pencereyi engelledi. Lütfen açılır pencerelere izin verip tekrar deneyin.';
+    return {
+      message:
+        'Tarayıcı Google giriş penceresini engelledi. Açılır pencerelere izin verebilir veya aşağıdaki "Yönlendirme ile Giriş Yap" butonunu kullanabilirsiniz.',
+      showRedirectFallback: true,
+    };
+  }
+  if (raw.includes('auth/operation-not-supported-in-this-environment')) {
+    return {
+      message:
+        'Bu tarayıcı ortamında açılır pencere desteklenmiyor. Aşağıdaki yönlendirme seçeneğini deneyebilir veya sayfayı yeni sekmede açabilirsiniz.',
+      showRedirectFallback: true,
+    };
+  }
+  if (raw.includes('auth/popup-closed-by-user')) {
+    return {
+      message: 'Giriş penceresi tamamlanmadan kapatıldı. Devam etmek için tekrar deneyebilirsiniz.',
+    };
+  }
+  if (raw.includes('auth/cancelled-popup-request')) {
+    return {
+      message: 'Önceki giriş penceresi iptal edildi. Lütfen tekrar deneyin.',
+    };
+  }
+  if (raw.includes('auth/operation-not-allowed')) {
+    return {
+      message:
+        'Firebase projesinde Google giriş sağlayıcısı aktif değil. Firebase Console → Authentication → Sign-in method bölümünden Google’ı etkinleştirin.',
+    };
   }
   if (raw.includes('auth/network-request-failed')) {
-    return 'Ağ bağlantısı kurulamadı. İnternet bağlantınızı kontrol edin.';
+    return {
+      message: 'Ağ bağlantısı kurulamadı. İnternet bağlantınızı kontrol edip tekrar deneyin.',
+    };
   }
-  return 'Hesap doğrulaması sırasında bir sorun oluştu. Lütfen tekrar deneyin.';
+
+  const codeMatch = /auth\/[a-z0-9-]+/i.exec(raw);
+  return {
+    message: codeMatch
+      ? `Hesap doğrulaması sırasında bir sorun oluştu (${codeMatch[0]}). Lütfen tekrar deneyin.`
+      : 'Hesap doğrulaması sırasında bir sorun oluştu. Lütfen tekrar deneyin.',
+  };
 }
 
 export function AuthModal({ isOpen, initialMode, onClose }: AuthModalProps) {
   const [mode, setMode] = useState<AuthModalMode>(initialMode);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [errorInfo, setErrorInfo] = useState<ParsedAuthError | null>(null);
 
   useEffect(() => {
     setMode(initialMode);
-    setError(null);
+    setErrorInfo(null);
   }, [initialMode, isOpen]);
 
   useEffect(() => {
@@ -50,13 +94,24 @@ export function AuthModal({ isOpen, initialMode, onClose }: AuthModalProps) {
 
   const handleGoogleAuth = async () => {
     setLoading(true);
-    setError(null);
+    setErrorInfo(null);
     try {
       await signInWithGoogleAccount();
       onClose();
     } catch (err) {
-      setError(mapFirebaseAuthError(err));
+      setErrorInfo(mapFirebaseAuthError(err));
     } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleGoogleRedirect = async () => {
+    setLoading(true);
+    setErrorInfo(null);
+    try {
+      await signInWithGoogleRedirectAccount();
+    } catch (err) {
+      setErrorInfo(mapFirebaseAuthError(err));
       setLoading(false);
     }
   };
@@ -85,7 +140,7 @@ export function AuthModal({ isOpen, initialMode, onClose }: AuthModalProps) {
                 {mode === 'register' ? 'Helyume Hesabı Oluştur' : 'Helyume’e Giriş Yap'}
               </h2>
               <p className="text-xs text-slate-400">
-                Sohbet geçmişin bulutta güvenle saklansın
+                Google / Gmail hesabınla sohbetlerini bulutta sakla
               </p>
             </div>
           </div>
@@ -111,7 +166,7 @@ export function AuthModal({ isOpen, initialMode, onClose }: AuthModalProps) {
             aria-selected={mode === 'login'}
             onClick={() => {
               setMode('login');
-              setError(null);
+              setErrorInfo(null);
             }}
             className={`py-2 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap ${
               mode === 'login'
@@ -127,7 +182,7 @@ export function AuthModal({ isOpen, initialMode, onClose }: AuthModalProps) {
             aria-selected={mode === 'register'}
             onClick={() => {
               setMode('register');
-              setError(null);
+              setErrorInfo(null);
             }}
             className={`py-2 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap ${
               mode === 'register'
@@ -150,16 +205,27 @@ export function AuthModal({ isOpen, initialMode, onClose }: AuthModalProps) {
           </div>
           <div className="flex items-center gap-2.5">
             <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" aria-hidden="true" />
-            <span>Doğrulanmış Google hesabı ile tek tıkla güvenli erişim</span>
+            <span>Doğrulanmış Gmail / Google hesabıyla tek tıkla güvenli erişim</span>
           </div>
         </div>
 
-        {error ? (
+        {errorInfo ? (
           <div
             role="alert"
-            className="mt-4 rounded-xl border border-red-500/30 bg-red-950/35 px-3.5 py-2.5 text-xs text-red-200 leading-relaxed"
+            className="mt-4 rounded-xl border border-red-500/30 bg-red-950/35 px-3.5 py-2.5 text-xs text-red-200 leading-relaxed space-y-2"
           >
-            {error}
+            <p>{errorInfo.message}</p>
+            {errorInfo.showRedirectFallback ? (
+              <button
+                type="button"
+                onClick={handleGoogleRedirect}
+                disabled={loading}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-white/10 hover:bg-white/20 px-2.5 py-1.5 text-[11px] font-semibold text-white transition-colors cursor-pointer"
+              >
+                <ExternalLink className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>Yönlendirme ile Giriş Yap</span>
+              </button>
+            ) : null}
           </div>
         ) : null}
 
@@ -192,8 +258,8 @@ export function AuthModal({ isOpen, initialMode, onClose }: AuthModalProps) {
               {loading
                 ? 'Bağlanıyor...'
                 : mode === 'register'
-                  ? 'Google ile Hemen Kayıt Ol'
-                  : 'Google ile Giriş Yap'}
+                  ? 'Google / Gmail ile Kayıt Ol'
+                  : 'Google / Gmail ile Giriş Yap'}
             </span>
           </button>
 

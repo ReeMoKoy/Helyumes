@@ -1,7 +1,7 @@
 import { resolveHelyumeModel } from '../src/lib/models.ts';
 import {
   formatFriendlyApiError,
-  type ChatTurn,
+  sanitizeChatTurns,
   type SseEvent,
 } from '../src/lib/research.ts';
 import { runHelyumeResearchStream } from '../server/gemini.ts';
@@ -26,20 +26,11 @@ export async function POST(request: Request): Promise<Response> {
     );
   }
 
-  const validMessages: ChatTurn[] = body.messages
-    .filter(
-      (m): m is ChatTurn =>
-        Boolean(m) &&
-        typeof m === 'object' &&
-        ((m as ChatTurn).role === 'user' || (m as ChatTurn).role === 'assistant') &&
-        typeof (m as ChatTurn).content === 'string' &&
-        (m as ChatTurn).content.trim().length > 0
-    )
-    .slice(-16);
+  const validMessages = sanitizeChatTurns(body.messages);
 
   if (validMessages.length === 0) {
     return Response.json(
-      { error: 'Geçerli bir mesaj içeriği bulunamadı.' },
+      { error: 'Geçerli bir mesaj veya medya içeriği bulunamadı.' },
       { status: 400 }
     );
   }

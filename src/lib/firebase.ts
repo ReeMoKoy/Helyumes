@@ -2,8 +2,10 @@ import { initializeApp } from 'firebase/app';
 import {
   GoogleAuthProvider,
   getAuth,
+  getRedirectResult,
   onAuthStateChanged,
   signInWithPopup,
+  signInWithRedirect,
   signOut,
   type User,
 } from 'firebase/auth';
@@ -31,6 +33,7 @@ import type { ChatMessage, Conversation } from './storage';
 const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
+auth.languageCode = 'tr';
 
 const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
@@ -101,6 +104,19 @@ if (typeof window !== 'undefined') {
   void testConnection();
 }
 
+if (typeof window !== 'undefined') {
+  void getRedirectResult(auth)
+    .then((result) => {
+      if (result?.user) {
+        return ensureUserProfile(result.user);
+      }
+      return undefined;
+    })
+    .catch(() => {
+      // Redirect errors are surfaced during interactive login when triggered
+    });
+}
+
 export function sanitizeDocId(rawId: string): string {
   const cleaned = rawId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 128);
   return cleaned || `id_${Date.now()}`;
@@ -108,8 +124,15 @@ export function sanitizeDocId(rawId: string): string {
 
 export async function signInWithGoogleAccount(): Promise<User> {
   const credential = await signInWithPopup(auth, googleProvider);
-  await ensureUserProfile(credential.user);
+  // Sync user profile without blocking popup completion on transient Firestore latency
+  void ensureUserProfile(credential.user).catch((err) => {
+    console.warn('Profil senkronizasyonu ertelendi:', err);
+  });
   return credential.user;
+}
+
+export async function signInWithGoogleRedirectAccount(): Promise<void> {
+  await signInWithRedirect(auth, googleProvider);
 }
 
 export async function signOutAccount(): Promise<void> {
@@ -213,6 +236,7 @@ export async function fetchConversationMessages(
         model?: HelyumeModelId;
         engine?: string;
         durationMs?: number;
+        attachmentSummary?: string;
       };
       return {
         id: data.id || d.id,
@@ -222,6 +246,10 @@ export async function fetchConversationMessages(
         phase: 'done',
         engine: data.engine === 'api' ? 'api' : 'none',
         durationMs: typeof data.durationMs === 'number' ? data.durationMs : undefined,
+        attachmentSummary:
+          typeof data.attachmentSummary === 'string' && data.attachmentSummary.length > 0
+            ? data.attachmentSummary
+            : undefined,
       };
     });
   } catch (error) {
@@ -278,13 +306,19 @@ export async function persistConversationMessages(params: {
 
     const batch = writeBatch(db);
     const userMsgRef = doc(db, 'users', safeUid, 'conversations', safeConvId, 'messages', safeUserMsgId);
+    const safeUserText = (userMessage.content.trim() || userMessage.attachmentSummary || 'Medya').slice(
+      0,
+      32000
+    );
+    const safeAttachmentSummary = userMessage.attachmentSummary?.slice(0, 300);
     batch.set(userMsgRef, {
       id: safeUserMsgId,
       userId: safeUid,
       conversationId: safeConvId,
       role: 'user',
-      content: userMessage.content.slice(0, 32000),
+      content: safeUserText,
       model: resolveHelyumeModel(model).id,
+      ...(safeAttachmentSummary ? { attachmentSummary: safeAttachmentSummary } : {}),
       createdAt: serverTimestamp(),
     });
 

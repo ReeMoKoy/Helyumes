@@ -1,14 +1,17 @@
-import { LogIn, LogOut, Menu, UserPlus } from 'lucide-react';
+import { LogIn, LogOut, Menu, UserPlus, Video } from 'lucide-react';
 import type { User } from 'firebase/auth';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AuthModal, type AuthModalMode } from './components/AuthModal';
 import { Composer } from './components/Composer';
 import { HelyumeLogo } from './components/HelyumeLogo';
+import { LiveAssistantModal } from './components/LiveAssistantModal';
 import { MessageList } from './components/MessageList';
 import { Sidebar } from './components/Sidebar';
+import { prepareMediaAttachment } from './lib/media';
 import { DEFAULT_HELYUME_MODEL, type HelyumeModelId } from './lib/models';
 import {
   deleteCloudConversation,
+  ensureUserProfile,
   fetchConversationMessages,
   persistConversationMessages,
   signOutAccount,
@@ -20,11 +23,14 @@ import {
   formatFriendlyApiError,
   parseSseChunk,
   type ChatTurn,
+  type MediaAttachmentInput,
 } from './lib/research';
 import {
+  buildAttachmentSummary,
   deriveConversationTitle,
   loadConversations,
   saveConversations,
+  type ChatAttachment,
   type ChatMessage,
   type Conversation,
 } from './lib/storage';
@@ -50,6 +56,9 @@ export default function App() {
 
   const [selectedModel, setSelectedModel] = useState<HelyumeModelId>(DEFAULT_HELYUME_MODEL);
   const [input, setInput] = useState('');
+  const [pendingAttachments, setPendingAttachments] = useState<ChatAttachment[]>([]);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [isLiveOpen, setIsLiveOpen] = useState(false);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [streamingConvId, setStreamingConvId] = useState<string | null>(null);
 
@@ -79,7 +88,9 @@ export default function App() {
     const unsubscribe = subscribeAuthState((nextUser) => {
       setUser(nextUser);
       setAuthReady(true);
-      if (!nextUser) {
+      if (nextUser) {
+        void ensureUserProfile(nextUser).catch(() => {});
+      } else {
         setConversations(loadConversations());
         setActiveId(null);
       }
@@ -163,6 +174,38 @@ export default function App() {
     setActiveId(null);
     setLoadingConvId(null);
     setInput('');
+    setPendingAttachments([]);
+    setAttachmentError(null);
+  };
+
+  const handleAddFiles = async (fileList: FileList | File[]) => {
+    setAttachmentError(null);
+    const incomingFiles = Array.from(fileList);
+    if (incomingFiles.length === 0) return;
+
+    const remainingSlots = Math.max(0, 4 - pendingAttachments.length);
+    if (remainingSlots === 0) {
+      setAttachmentError('Bir mesajda en fazla 4 görsel veya video ekleyebilirsiniz.');
+      return;
+    }
+
+    const added: ChatAttachment[] = [];
+    for (const file of incomingFiles.slice(0, remainingSlots)) {
+      try {
+        const prepared = await prepareMediaAttachment(file);
+        added.push(prepared);
+      } catch (err) {
+        setAttachmentError(err instanceof Error ? err.message : 'Dosya eklenemedi.');
+      }
+    }
+    if (added.length > 0) {
+      setPendingAttachments((prev) => [...prev, ...added].slice(0, 4));
+    }
+  };
+
+  const handleRemoveAttachment = (id: string) => {
+    setAttachmentError(null);
+    setPendingAttachments((prev) => prev.filter((item) => item.id !== id));
   };
 
   const handleSelectChat = async (id: string) => {
@@ -428,20 +471,43 @@ export default function App() {
     }
   };
 
+  const toApiAttachments = (items?: ChatAttachment[]): MediaAttachmentInput[] | undefined => {
+    if (!items || items.length === 0) return undefined;
+    const mapped = items
+      .filter((att) => typeof att.dataBase64 === 'string' && att.dataBase64.length > 0)
+      .map((att) => ({
+        kind: att.kind,
+        mimeType: att.mimeType,
+        dataBase64: att.dataBase64!,
+        name: att.name,
+      }));
+    return mapped.length > 0 ? mapped : undefined;
+  };
+
   const runPrompt = async (promptText: string, overrideConvId?: string) => {
     const trimmed = promptText.trim();
-    if (!trimmed || streamingConvId) return;
+    const currentAttachments = pendingAttachments;
+    if ((!trimmed && currentAttachments.length === 0) || streamingConvId) return;
 
     const targetConvId = overrideConvId ?? activeId ?? createId('conv');
     const existingConv = conversations.find((c) => c.id === targetConvId);
-    const validPriorTurns = (existingConv?.messages ?? [])
-      .filter((m) => m.content.trim().length > 0 && !m.error)
-      .map((m) => ({ role: m.role, content: m.content }));
+    const validPriorTurns: ChatTurn[] = (existingConv?.messages ?? [])
+      .filter((m) => (m.content.trim().length > 0 || (m.attachments?.length ?? 0) > 0) && !m.error)
+      .map((m) => ({
+        role: m.role,
+        content: m.content,
+        ...(toApiAttachments(m.attachments) ? { attachments: toApiAttachments(m.attachments) } : {}),
+      }));
+
+    const attachmentSummary = buildAttachmentSummary(currentAttachments);
+    const displayText = trimmed;
 
     const userMsg: ChatMessage = {
       id: createId('msg'),
       role: 'user',
-      content: trimmed,
+      content: displayText,
+      ...(currentAttachments.length > 0 ? { attachments: currentAttachments } : {}),
+      ...(attachmentSummary ? { attachmentSummary } : {}),
     };
     const assistantId = createId('msg');
     const assistantPlaceholder: ChatMessage = {
@@ -453,12 +519,20 @@ export default function App() {
       statusLabel: 'Düşünüyor...',
     };
 
+    const apiAttachments = toApiAttachments(currentAttachments);
     const historyTurns: ChatTurn[] = [
       ...validPriorTurns,
-      { role: 'user', content: trimmed },
+      {
+        role: 'user',
+        content: displayText,
+        ...(apiAttachments ? { attachments: apiAttachments } : {}),
+      },
     ];
 
-    const convTitle = existingConv?.title ?? deriveConversationTitle(trimmed);
+    const convTitle = deriveConversationTitle(
+      trimmed || currentAttachments[0]?.name || 'Medya Analizi'
+    );
+    const resolvedTitle = existingConv?.title ?? convTitle;
 
     if (existingConv) {
       setConversations((prev) =>
@@ -476,7 +550,7 @@ export default function App() {
     } else {
       const newConv: Conversation = {
         id: targetConvId,
-        title: convTitle,
+        title: resolvedTitle,
         model: selectedModel,
         updatedAt: Date.now(),
         messages: [userMsg, assistantPlaceholder],
@@ -486,8 +560,10 @@ export default function App() {
     }
 
     setInput('');
+    setPendingAttachments([]);
+    setAttachmentError(null);
     await streamToAssistant(targetConvId, assistantId, historyTurns, selectedModel, {
-      title: convTitle,
+      title: resolvedTitle,
       isNewConversation: !existingConv,
       userMessage: userMsg,
     });
@@ -500,8 +576,12 @@ export default function App() {
 
     const priorMessages = activeConversation.messages.slice(0, idx);
     const historyTurns: ChatTurn[] = priorMessages
-      .filter((m) => m.content.trim().length > 0 && !m.error)
-      .map((m) => ({ role: m.role, content: m.content }));
+      .filter((m) => (m.content.trim().length > 0 || (m.attachments?.length ?? 0) > 0) && !m.error)
+      .map((m) => ({
+        role: m.role,
+        content: m.content,
+        ...(toApiAttachments(m.attachments) ? { attachments: toApiAttachments(m.attachments) } : {}),
+      }));
 
     const lastUserTurn = [...historyTurns].reverse().find((t) => t.role === 'user');
     if (!lastUserTurn) return;
@@ -586,6 +666,16 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => setIsLiveOpen(true)}
+              aria-label="Sesli ve görüntülü canlı asistanı başlat"
+              className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl border border-cyan-400/25 bg-cyan-500/10 text-xs font-medium text-cyan-200 hover:bg-cyan-500/20 transition-colors whitespace-nowrap cursor-pointer"
+            >
+              <Video className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+              <span className="hidden sm:inline">Canlı Asistan</span>
+            </button>
+
             {user ? (
               <div className="flex items-center gap-2">
                 <div className="inline-flex items-center gap-2 px-2.5 py-1.5 rounded-xl border border-white/[0.08] bg-white/[0.04]">
@@ -677,6 +767,11 @@ export default function App() {
           isStreaming={isStreaming}
           selectedModel={selectedModel}
           onSelectModel={handleModelChange}
+          attachments={pendingAttachments}
+          onAddFiles={handleAddFiles}
+          onRemoveAttachment={handleRemoveAttachment}
+          attachmentError={attachmentError}
+          onOpenLiveAssistant={() => setIsLiveOpen(true)}
         />
       </div>
 
@@ -685,6 +780,8 @@ export default function App() {
         initialMode={authModalMode ?? 'login'}
         onClose={() => setAuthModalMode(null)}
       />
+
+      <LiveAssistantModal isOpen={isLiveOpen} onClose={() => setIsLiveOpen(false)} />
     </div>
   );
 }

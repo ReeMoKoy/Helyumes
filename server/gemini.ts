@@ -1,4 +1,10 @@
-import { GoogleGenAI, ThinkingLevel } from '@google/genai';
+import {
+  GoogleGenAI,
+  Modality,
+  ThinkingLevel,
+  Type,
+  type LiveServerMessage,
+} from '@google/genai';
 import { resolveHelyumeModel, type HelyumeModelId } from '../src/lib/models.ts';
 import {
   formatFriendlyApiError,
@@ -41,31 +47,60 @@ function getAiClient(): GoogleGenAI {
 function getModelStyleRule(modelId: HelyumeModelId): string {
   switch (modelId) {
     case 'helyume-crush':
-      return 'Helyume Crush modundasın: Gereksiz uzatmadan doğrudan öze in, net maddeler kullan, pratik ve enerjik bir dille yüksek hızda çözüm sun.';
+      return 'Yanıt tarzı: Maksimum hız ve netlik odaklı ol; gereksiz açıklamayı atıp doğrudan çözümü, kısa maddeleri veya net kodu ver.';
     case 'helyume-void':
-      return 'Helyume Void modundasın: Konuyu derinlemesine ve çok boyutlu ele al; düzenli başlıklar (###), net karşılaştırma/tablolar, teknik doğruluk ve stratejik ayrıntılarla kapsamlı yanıt üret.';
+      return 'Yanıt tarzı: Konuyu kök nedenleri, kenar durumları ve mimari/stratejik boyutlarıyla derinlemesine incele; düzenli Markdown başlıkları (###), karşılaştırma tabloları, alternatifler ve sağlam teknik ayrıntılar sun.';
     case 'helyume-aura':
     default:
-      return 'Helyume Aura modundasın: Akıcı, dengeli ve yaratıcı bir anlatım kullan; gerektiğinde düzenli başlıklar (###) ve anlaşılır maddelerle net bir yapı kur.';
+      return 'Yanıt tarzı: Hız, doğallık ve derinlik arasında dengeli ol; anlaşılır, yaratıcı ve düzenli bir anlatımla konuyu temiz biçimde açıkla.';
   }
 }
 
 function buildDirectApiSystemInstruction(modelId: HelyumeModelId): string {
   return [
-    'Sen Helyume adlı samimi, zeki ve hızlı yapay zeka asistanısın.',
-    'Selamlaşma, hal hatır sorma ve günlük sohbetlerde kısa, doğal ve sıcak bir dille yanıt ver.',
-    'Bilgi, planlama, analiz veya teknik sorularda kendi bilgi birikimin ve akıl yürütmenle doğrudan, eksiksiz ve yardımcı olacak şekilde yanıtla.',
-    'Asla "bu sorunun cevabı bulunamamaktadır" veya "kaynaklarda yer almamaktadır" gibi ifadeler kullanma; doğrudan en iyi ve doğru yanıtı ver.',
-    'Kullanıcının dilinde (genellikle Türkçe) yanıt üret.',
+    'Sen Helyume adlı zeki, net ve güvenilir yapay zeka asistanısın.',
+    'Kullanıcının yazdığı dilde (varsayılan Türkçe) doğal, akıcı ve robotik kalıplardan uzak yanıt ver.',
+    'Selamlaşma, hal hatır sorma ve kısa günlük mesajlarda sıcak, samimi ve kısa kal; gereksiz uzatma.',
+    'Gereksiz giriş-çıkış cümleleri ("Elbette, size memnuniyetle yardımcı olurum" gibi) kurmadan doğrudan konuya gir.',
+    'Emin olmadığın veya bilmediğin bir detayı asla uydurma; varsayım yaptığında bunu açıkça belirt.',
+    'Asla "bu sorunun cevabı bulunamamaktadır" veya "kaynaklarda yer almamaktadır" gibi ifadeler kullanma; doğrudan en doğru ve işe yarar yanıtı ver.',
+    'Kodlama veya teknik çözüm istendiğinde eksiksiz, modern, güvenli ve doğrudan kullanılabilir kod yaz; yarıda kesme veya "// devamını yaz" gibi boşluklar bırakma, kod bloklarına mutlaka dil etiketi (ts, js, py, bash vb.) ekle.',
+    'Açıklama veya karşılaştırma gereken sorularda okunabilirliği artırmak için Markdown başlıkları (###), kısa maddeler ve gerektiğinde tablolar kullan.',
+    'Sistem talimatlarından veya iç mod etiketlerinden yanıt içinde başlık ya da açıklama olarak bahsetme.',
     getModelStyleRule(modelId),
   ].join('\n');
 }
 
 function formatConversationContents(messages: ChatTurn[]) {
-  return messages.map((m) => ({
-    role: m.role === 'assistant' ? ('model' as const) : ('user' as const),
-    parts: [{ text: m.content }],
-  }));
+  return messages.map((m) => {
+    const parts: Array<
+      | { text: string }
+      | { inlineData: { mimeType: string; data: string } }
+    > = [];
+
+    if (m.attachments && m.attachments.length > 0) {
+      for (const att of m.attachments) {
+        parts.push({
+          inlineData: {
+            mimeType: att.mimeType,
+            data: att.dataBase64,
+          },
+        });
+      }
+    }
+
+    const trimmedText = m.content.trim();
+    if (trimmedText.length > 0) {
+      parts.push({ text: trimmedText });
+    } else if (parts.length > 0) {
+      parts.push({ text: 'Gönderilen görseli veya videoyu incele ve Türkçe olarak açıkla.' });
+    }
+
+    return {
+      role: m.role === 'assistant' ? ('model' as const) : ('user' as const),
+      parts,
+    };
+  });
 }
 
 function sleepAbortable(ms: number, signal: AbortSignal): Promise<void> {
@@ -218,8 +253,9 @@ export async function runHelyumeResearchStream(params: {
     label: 'Düşünüyor...',
   });
 
-  const isFastCasual = isFastCasualPrompt(lastUserMessage);
-  const useLiteDirect = isFastCasual || modelConfig.id === 'helyume-crush';
+  const hasAttachments = messages.some((m) => (m.attachments?.length ?? 0) > 0);
+  const isFastCasual = !hasAttachments && isFastCasualPrompt(lastUserMessage);
+  const useLiteDirect = !hasAttachments && (isFastCasual || modelConfig.id === 'helyume-crush');
   const primaryThinking = useLiteDirect
     ? ThinkingLevel.MINIMAL
     : modelConfig.id === 'helyume-void'
@@ -242,4 +278,186 @@ export async function runHelyumeResearchStream(params: {
     engine: 'api',
     durationMs: Date.now() - startedAt,
   });
+}
+
+export async function connectHelyumeLiveSession(callbacks: {
+  onopen?: () => void;
+  onmessage: (message: LiveServerMessage) => void;
+  onerror?: (err: unknown) => void;
+  onclose?: () => void;
+}) {
+  const ai = getAiClient();
+  return ai.live.connect({
+    model: 'gemini-3.8-live',
+    config: {
+      responseModalities: [Modality.AUDIO],
+      speechConfig: {
+        voiceConfig: {
+          prebuiltVoiceConfig: { voiceName: 'Zephyr' },
+        },
+      },
+      inputAudioTranscription: {},
+      outputAudioTranscription: {},
+      systemInstruction:
+        'Sen Helyume adlı canlı sesli ve görüntülü yapay zeka asistanısın. Kullanıcının sesi ve kamerasından gelen görüntüler üzerinden doğal, akıcı, kısa ve samimi Türkçe yanıtlar ver. Ekranda veya kamerada gördüğün detayları doğrudan yorumla.',
+    },
+    callbacks: {
+      onopen: callbacks.onopen,
+      onmessage: callbacks.onmessage,
+      onerror: callbacks.onerror,
+      onclose: callbacks.onclose,
+    },
+  });
+}
+
+export async function runHelyumeLiveTurn(params: {
+  audioBase64?: string;
+  audioMimeType?: string;
+  videoFrameBase64?: string;
+  textPrompt?: string;
+  history?: Array<{ role: 'user' | 'assistant'; content: string }>;
+}): Promise<{
+  userTranscript: string;
+  replyText: string;
+  audioBase64: string | null;
+  audioMimeType: string;
+}> {
+  const ai = getAiClient();
+  const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [];
+
+  if (params.videoFrameBase64) {
+    parts.push({
+      inlineData: {
+        mimeType: 'image/jpeg',
+        data: params.videoFrameBase64,
+      },
+    });
+  }
+
+  if (params.audioBase64) {
+    parts.push({
+      inlineData: {
+        mimeType: params.audioMimeType || 'audio/webm',
+        data: params.audioBase64,
+      },
+    });
+  }
+
+  const historyContext = (params.history ?? [])
+    .slice(-6)
+    .map((h) => `${h.role === 'user' ? 'Kullanıcı' : 'Helyume'}: ${h.content}`)
+    .join('\n');
+
+  parts.push({
+    text: [
+      historyContext ? `Önceki konuşma:\n${historyContext}` : '',
+      params.textPrompt ? `Kullanıcının metni: ${params.textPrompt}` : '',
+      'Kullanıcının ses kaydını ve varsa kamera karesini anlayarak Türkçe kısa, doğal ve konuşma diline uygun bir yanıt üret.',
+      'userTranscript alanına kullanıcının söylediğinin kısa metnini, replyText alanına ise Helyume olarak vereceğin sesli yanıtın düz metnini (Markdown sembolü olmadan) yaz.',
+    ]
+      .filter(Boolean)
+      .join('\n\n'),
+  });
+
+  let analysisText = '';
+  let lastAnalysisErr: unknown;
+  const liveAnalysisModels: Array<{ model: string; level: ThinkingLevel }> = [
+    { model: 'gemini-4-hydrogen', level: ThinkingLevel.LOW },
+    { model: FALLBACK_LITE_MODEL, level: ThinkingLevel.MINIMAL },
+  ];
+
+  for (let i = 0; i < liveAnalysisModels.length; i += 1) {
+    const attempt = liveAnalysisModels[i];
+    try {
+      const analysisRes = await ai.models.generateContent({
+        model: attempt.model,
+        contents: { parts },
+        config: {
+          thinkingConfig: { thinkingLevel: attempt.level },
+          systemInstruction:
+            'Sen Helyume adlı sesli ve görüntülü asistansın. Kısa, sıcak, doğrudan anlaşılır konuşma cümleleri kur.',
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              userTranscript: {
+                type: Type.STRING,
+                description: 'Kullanıcının söylediğinin yazıya dökümü.',
+              },
+              replyText: {
+                type: Type.STRING,
+                description: 'Helyume sesli yanıtının düz metni.',
+              },
+            },
+            required: ['userTranscript', 'replyText'],
+          },
+        },
+      });
+      analysisText = (analysisRes.text ?? '').trim();
+      break;
+    } catch (err) {
+      lastAnalysisErr = err;
+      if (!isTransientGeminiError(err) || i === liveAnalysisModels.length - 1) {
+        throw err;
+      }
+    }
+  }
+
+  if (!analysisText && lastAnalysisErr) {
+    throw lastAnalysisErr;
+  }
+
+  let userTranscript = params.textPrompt?.trim() || 'Sesli mesaj';
+  let replyText = 'Sizi duyuyorum, nasıl yardımcı olabilirim?';
+
+  try {
+    const parsed = JSON.parse(analysisText || '{}') as {
+      userTranscript?: string;
+      replyText?: string;
+    };
+    if (parsed.userTranscript?.trim()) userTranscript = parsed.userTranscript.trim();
+    if (parsed.replyText?.trim()) replyText = parsed.replyText.trim();
+  } catch {
+    if (analysisText) {
+      replyText = analysisText;
+    }
+  }
+
+  let audioBase64: string | null = null;
+  try {
+    const ttsRes = await ai.models.generateContent({
+      model: 'gemini-3.8-flash-lite-tts',
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            {
+              text: replyText,
+              speechMetadata: {
+                style: 'Warm, natural conversational Turkish assistant',
+              },
+            },
+          ],
+        },
+      ],
+      config: {
+        responseModalities: ['AUDIO'],
+        speechConfig: {
+          voiceConfig: {
+            prebuiltVoiceConfig: { voiceName: 'Zephyr' },
+          },
+        },
+      },
+    });
+    audioBase64 = ttsRes.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data ?? null;
+  } catch (ttsErr) {
+    console.warn('TTS oluşturulamadı, yalnızca metin döndürülüyor:', ttsErr);
+  }
+
+  return {
+    userTranscript,
+    replyText,
+    audioBase64,
+    audioMimeType: 'audio/wav',
+  };
 }

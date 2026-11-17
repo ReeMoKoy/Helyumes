@@ -16,4 +16,5 @@ test('firestore.rules contains global default-deny and verified identity gates',
   assert.match(rulesContent, /'helyume-crush'/);
   assert.match(rulesContent, /'helyume-aura'/);
   assert.match(rulesContent, /'helyume-void'/);
+  assert.match(rulesContent, /attachmentSummary/);
 });

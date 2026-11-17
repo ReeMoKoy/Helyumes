@@ -60,7 +60,7 @@ service cloud.firestore {
 
     function isValidChatMessage(data) {
       return data.keys().hasAll(['id', 'userId', 'conversationId', 'role', 'content', 'model', 'createdAt'])
-        && data.keys().hasOnly(['id', 'userId', 'conversationId', 'role', 'content', 'model', 'engine', 'durationMs', 'createdAt'])
+        && data.keys().hasOnly(['id', 'userId', 'conversationId', 'role', 'content', 'model', 'engine', 'durationMs', 'attachmentSummary', 'createdAt'])
         && isValidId(data.id)
         && isValidId(data.userId)
         && data.userId == request.auth.uid
@@ -74,6 +74,7 @@ service cloud.firestore {
         && data.model in ['helyume-crush', 'helyume-aura', 'helyume-void', 'helyume-1-pro', 'helyume-1-ultra']
         && (!('engine' in data) || (data.engine is string && data.engine in ['wikipedia', 'api', 'none']))
         && (!('durationMs' in data) || (data.durationMs is number && data.durationMs >= 0 && data.durationMs <= 600000))
+        && (!('attachmentSummary' in data) || (data.attachmentSummary is string && data.attachmentSummary.size() <= 300))
         && data.createdAt is timestamp;
     }
 
@@ -145,7 +146,7 @@ service cloud.firestore {
             && isValidId(messageId)
             && isOwner(userId)
             && isValidChatMessage(incoming())
-            && incoming().diff(existing()).affectedKeys().hasOnly(['content', 'model', 'engine', 'durationMs'])
+            && incoming().diff(existing()).affectedKeys().hasOnly(['content', 'model', 'engine', 'durationMs', 'attachmentSummary'])
             && incoming().id == existing().id
             && incoming().userId == existing().userId
             && incoming().conversationId == existing().conversationId

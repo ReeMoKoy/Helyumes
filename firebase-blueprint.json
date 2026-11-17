@@ -117,6 +117,10 @@
         "durationMs": {
           "type": "number"
         },
+        "attachmentSummary": {
+          "type": "string",
+          "maxLength": 300
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time"

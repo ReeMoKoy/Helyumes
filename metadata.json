@@ -1,6 +1,6 @@
 {
   "name": "Helyume",
   "description": "Hızlı düşünen yapay zeka asistanı — Helyume Crush, Helyume Aura ve Helyume Void.",
-  "requestFramePermissions": [],
+  "requestFramePermissions": ["microphone", "camera"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

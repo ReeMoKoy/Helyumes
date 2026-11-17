@@ -1,5 +1,15 @@
 import type { HelyumeModelId } from './models';
-import type { ResearchPhase, SearchEngine } from './research';
+import type { AttachmentKind, ResearchPhase, SearchEngine } from './research';
+
+export interface ChatAttachment {
+  id: string;
+  kind: AttachmentKind;
+  name: string;
+  mimeType: string;
+  sizeBytes?: number;
+  previewUrl?: string;
+  dataBase64?: string;
+}
 
 export interface ChatMessage {
   id: string;
@@ -11,6 +21,8 @@ export interface ChatMessage {
   engine?: SearchEngine | 'none';
   durationMs?: number;
   error?: string;
+  attachments?: ChatAttachment[];
+  attachmentSummary?: string;
 }
 
 export interface Conversation {
@@ -27,6 +39,14 @@ export function deriveConversationTitle(prompt: string): string {
   const cleaned = prompt.trim().replace(/\s+/g, ' ');
   if (cleaned.length <= 44) return cleaned || 'Yeni Sohbet';
   return `${cleaned.slice(0, 41)}...`;
+}
+
+export function buildAttachmentSummary(attachments?: ChatAttachment[]): string | undefined {
+  if (!attachments || attachments.length === 0) return undefined;
+  const summary = attachments
+    .map((att) => `${att.kind === 'video' ? 'Video' : 'Görsel'}: ${att.name}`)
+    .join(', ');
+  return summary.slice(0, 300);
 }
 
 export function loadConversations(): Conversation[] {
@@ -51,7 +71,20 @@ export function loadConversations(): Conversation[] {
 export function saveConversations(conversations: Conversation[]): void {
   if (typeof window === 'undefined') return;
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(conversations));
+    const compact = conversations.map((conv) => ({
+      ...conv,
+      messages: conv.messages.map((msg) => ({
+        ...msg,
+        attachments: msg.attachments?.map((att) => ({
+          id: att.id,
+          kind: att.kind,
+          name: att.name,
+          mimeType: att.mimeType,
+          sizeBytes: att.sizeBytes,
+        })),
+      })),
+    }));
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(compact));
   } catch {
     // Ignore storage quota errors
   }

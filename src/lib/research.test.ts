@@ -9,12 +9,15 @@ import {
   formatFriendlyApiError,
   isFastCasualPrompt,
   isTransientGeminiError,
+  isValidMediaAttachment,
   parseSseChunk,
+  sanitizeChatTurns,
 } from './research';
 import { parseInlineMarkdown, parseMarkdownBlocks } from './markdown';
-import { deriveConversationTitle } from './storage';
+import { buildAttachmentSummary, deriveConversationTitle } from './storage';
 import { GET as healthGet } from '../../api/health';
 import { POST as chatPost } from '../../api/chat';
+import { POST as liveTurnPost } from '../../api/live-turn';
 
 test('model registry contains Helyume Crush, Helyume Aura, and Helyume Void with legacy mapping', () => {
   assert.equal(HELYUME_MODELS.length, 3);
@@ -137,4 +140,53 @@ test('Vercel serverless /api/health and /api/chat handlers validate inputs clean
   assert.equal(emptyMsgsRes.status, 400);
   const emptyMsgsData = (await emptyMsgsRes.json()) as { error: string };
   assert.match(emptyMsgsData.error, /mesaj/);
+
+  const emptyLiveReq = new Request('http://localhost/api/live-turn', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  const emptyLiveRes = await liveTurnPost(emptyLiveReq);
+  assert.equal(emptyLiveRes.status, 400);
+  const emptyLiveData = (await emptyLiveRes.json()) as { error: string };
+  assert.match(emptyLiveData.error, /Ses/);
+});
+
+test('sanitizeChatTurns and buildAttachmentSummary validate image/video attachments cleanly', () => {
+  assert.equal(
+    isValidMediaAttachment({ kind: 'image', mimeType: 'image/png', dataBase64: 'AAAA' }),
+    true
+  );
+  assert.equal(
+    isValidMediaAttachment({ kind: 'video', mimeType: 'video/mp4', dataBase64: 'BBBB' }),
+    true
+  );
+  assert.equal(
+    isValidMediaAttachment({ kind: 'image', mimeType: 'application/pdf', dataBase64: 'CCCC' }),
+    false
+  );
+
+  const turns = sanitizeChatTurns([
+    {
+      role: 'user',
+      content: '',
+      attachments: [
+        { kind: 'image', mimeType: 'image/jpeg', dataBase64: 'AAAA', name: 'foto.jpg' },
+        { kind: 'video', mimeType: 'text/plain', dataBase64: 'BAD' },
+      ],
+    },
+    { role: 'user', content: '   ' },
+  ]);
+
+  assert.equal(turns.length, 1);
+  assert.equal(turns[0].attachments?.length, 1);
+  assert.equal(turns[0].attachments?.[0].mimeType, 'image/jpeg');
+
+  assert.equal(
+    buildAttachmentSummary([
+      { id: '1', kind: 'image', name: 'ekran.png', mimeType: 'image/png' },
+      { id: '2', kind: 'video', name: 'klip.mp4', mimeType: 'video/mp4' },
+    ]),
+    'Görsel: ekran.png, Video: klip.mp4'
+  );
 });

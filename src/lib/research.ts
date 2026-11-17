@@ -7,9 +7,19 @@ export type ResearchPhase =
 
 export type SearchEngine = 'api';
 
+export type AttachmentKind = 'image' | 'video';
+
+export interface MediaAttachmentInput {
+  kind: AttachmentKind;
+  mimeType: string;
+  dataBase64: string;
+  name?: string;
+}
+
 export interface ChatTurn {
   role: 'user' | 'assistant';
   content: string;
+  attachments?: MediaAttachmentInput[];
 }
 
 export type SseEvent =
@@ -17,6 +27,53 @@ export type SseEvent =
   | { type: 'delta'; text: string }
   | { type: 'done'; engine: SearchEngine | 'none'; durationMs: number }
   | { type: 'error'; message: string };
+
+const ALLOWED_IMAGE_MIMES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/jpg',
+  'image/webp',
+  'image/gif',
+]);
+
+const ALLOWED_VIDEO_MIMES = new Set([
+  'video/mp4',
+  'video/webm',
+  'video/quicktime',
+]);
+
+export function isValidMediaAttachment(raw: unknown): raw is MediaAttachmentInput {
+  if (!raw || typeof raw !== 'object') return false;
+  const att = raw as Partial<MediaAttachmentInput>;
+  if (att.kind !== 'image' && att.kind !== 'video') return false;
+  if (typeof att.mimeType !== 'string' || typeof att.dataBase64 !== 'string') return false;
+  if (att.dataBase64.length === 0 || att.dataBase64.length > 16_000_000) return false;
+  const mime = att.mimeType.toLowerCase();
+  if (att.kind === 'image' && !ALLOWED_IMAGE_MIMES.has(mime)) return false;
+  if (att.kind === 'video' && !ALLOWED_VIDEO_MIMES.has(mime)) return false;
+  return true;
+}
+
+export function sanitizeChatTurns(rawMessages: unknown): ChatTurn[] {
+  if (!Array.isArray(rawMessages)) return [];
+  const result: ChatTurn[] = [];
+  for (const item of rawMessages) {
+    if (!item || typeof item !== 'object') continue;
+    const candidate = item as { role?: unknown; content?: unknown; attachments?: unknown };
+    if (candidate.role !== 'user' && candidate.role !== 'assistant') continue;
+    const content = typeof candidate.content === 'string' ? candidate.content : '';
+    const attachments = Array.isArray(candidate.attachments)
+      ? candidate.attachments.filter(isValidMediaAttachment).slice(0, 4)
+      : [];
+    if (content.trim().length === 0 && attachments.length === 0) continue;
+    result.push({
+      role: candidate.role,
+      content,
+      ...(attachments.length > 0 ? { attachments } : {}),
+    });
+  }
+  return result.slice(-16);
+}
 
 const FAST_CASUAL_EXACT_PHRASES = new Set([
   'selam',
